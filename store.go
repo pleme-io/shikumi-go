@@ -90,7 +90,14 @@ func Load[T any](path, prefix string, defaults T) (T, error) {
 		TagName:          structTag,
 		WeaklyTypedInput: true,
 	}
-	if err := k.UnmarshalWithConf("", &out, koanf.UnmarshalConf{DecoderConfig: dc}); err != nil {
+	// Tag MUST be set on UnmarshalConf, not just on DecoderConfig.TagName —
+	// koanf v2 unconditionally overwrites DecoderConfig.TagName to "koanf"
+	// whenever c.Tag is empty, silently dropping our `yaml` tag mapping. That
+	// makes top-level fields whose tag differs from the lowercased field name
+	// (e.g. `yaml:"saasDeploymentsToPause"` on PausePods) decode to their zero
+	// value while neighbours that happen to lowercase-match (Tenant, Replicas)
+	// load fine — a quiet, hard-to-spot footgun.
+	if err := k.UnmarshalWithConf("", &out, koanf.UnmarshalConf{Tag: structTag, DecoderConfig: dc}); err != nil {
 		return out, fmt.Errorf("shikumi: decode: %w", err)
 	}
 	return out, nil
