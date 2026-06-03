@@ -51,6 +51,61 @@ store, err := shikumi.For[Cfg]("myapp").Validate(validate.New()).LoadStore(ctx)
 store.Watch(ctx, func(c *Cfg, reloadErr error) { /* c is always last-good */ })
 ```
 
+### Conditional / cross-field validation
+
+Beyond the per-field `validate` tags, the `validate` sub-package adds a typed,
+reusable surface for the cross-field shapes struct tags express awkwardly —
+**required-if** and **mutually-exclusive aliases** — declared once against a
+config type and run inside the same `Validate` pass the loader already invokes:
+
+```go
+v := validate.New().Alias("port", "gte=1,lte=65535") // reusable named tag
+validate.Rules[Cfg](v).
+    RequiredIf("AccessKeyFile", "AuthKind", "file").       // file kind ⇒ file required
+    MutuallyExclusive("access", "AccessKey", "AccessKeyFile"). // at most one
+    ExactlyOne("creds", "InlineKey", "KeyFile").            // exactly one
+    Register()
+cfg, _ := shikumi.For[Cfg]("app").Validate(v).Load(ctx)
+```
+
+`Custom` is the escape hatch for invariants the named helpers do not cover; every
+rule reports through go-playground `ValidationErrors`, so failures render the same
+way as ordinary tag violations (via the `diag` sub-package).
+
+### Endpoint matrix
+
+`shikumi.Endpoint` / `shikumi.EndpointMatrix` are zero-dependency, embeddable
+core types for the recurring "list of endpoints this tool must reach" shape
+(host-template + path + criticality + expected-codes). Embed the matrix in your
+config and author it in YAML:
+
+```go
+type Cfg struct {
+    Region    string                 `yaml:"region"`
+    Endpoints shikumi.EndpointMatrix `yaml:"endpoints" validate:"endpoint_matrix,dive"`
+}
+```
+
+```yaml
+endpoints:
+  - name: gateway
+    host_template: "https://{region}.gateway.example.com"
+    path: "/v2/health"
+    criticality: critical
+    expected_codes: [200, 204]
+```
+
+```go
+url := ep.Expand(map[string]string{"region": cfg.Region}) // host-template expansion
+ok  := ep.Accepts(resp.StatusCode)                         // expected-code check
+crit := cfg.Endpoints.Critical()                           // criticality filtering
+```
+
+The `endpoint_matrix` field-validator (registered via `validate.EndpointMatrix(v)`)
+enforces the cross-row invariants (non-empty name + host-template, unique names);
+the `dive` portion validates each endpoint's own tags (criticality `oneof`,
+expected-code range).
+
 ### Secrets
 
 Config string values of the form `secret://<backend>/<path>` are dereferenced at
