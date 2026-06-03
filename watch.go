@@ -16,8 +16,12 @@ type fileWatcher struct {
 	cancel context.CancelFunc
 }
 
-// Watch reloads the store when its config file changes, calling onReload with
-// the new config (or a reload error) after each successful or failed reload.
+// Watch reloads the store when its config file changes, calling onReload after
+// each reload attempt. Per the keep-last-good contract, onReload always
+// receives the CURRENT-GOOD config pointer (never a half-applied or invalid
+// one): on a successful reload that is the new config; on a failed reload
+// (malformed file or failed validation) it is the previously published value,
+// alongside the non-nil reloadErr describing why the new value was rejected.
 //
 // It is symlink-aware: nix-darwin rewrites configs as store symlinks and swaps
 // the target atomically (unlink + symlink) on rebuild, so the inode changes
@@ -44,7 +48,9 @@ func (s *Store[T]) Watch(ctx context.Context, onReload func(*T, error)) error {
 		defer w.Close()
 		var timer *time.Timer
 		fire := func() {
-			err := s.Reload()
+			// reloadCtx keeps last-good on failure, so s.Get() is always the
+			// current-good pointer regardless of err.
+			err := s.reloadCtx(ctx)
 			if onReload != nil {
 				onReload(s.Get(), err)
 			}

@@ -1,6 +1,7 @@
 package shikumi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/toml"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
@@ -82,14 +82,10 @@ func Load[T any](path, prefix string, defaults T) (T, error) {
 			return out, fmt.Errorf("shikumi: merge %q: %w", path, err)
 		}
 	}
-	// WeaklyTypedInput coerces env-var strings ("9090", "true") into the
-	// field's real type, mirroring serde/figment in the Rust crate. Decoding
-	// is case-insensitive, so the lowercased keys still match `yaml` tags.
-	dc := &mapstructure.DecoderConfig{
-		Result:           &out,
-		TagName:          structTag,
-		WeaklyTypedInput: true,
-	}
+	// decoderConfig (loader.go) is the one shared mapstructure config:
+	// WeaklyTypedInput coerces env-var strings ("9090", "true") into the field's
+	// real type (mirroring serde/figment in the Rust crate); the
+	// TextUnmarshaller hook decodes string values into Secret[T] fields.
 	// Tag MUST be set on UnmarshalConf, not just on DecoderConfig.TagName —
 	// koanf v2 unconditionally overwrites DecoderConfig.TagName to "koanf"
 	// whenever c.Tag is empty, silently dropping our `yaml` tag mapping. That
@@ -97,26 +93,35 @@ func Load[T any](path, prefix string, defaults T) (T, error) {
 	// (e.g. `yaml:"saasDeploymentsToPause"` on PausePods) decode to their zero
 	// value while neighbours that happen to lowercase-match (Tenant, Replicas)
 	// load fine — a quiet, hard-to-spot footgun.
-	if err := k.UnmarshalWithConf("", &out, koanf.UnmarshalConf{Tag: structTag, DecoderConfig: dc}); err != nil {
+	if err := k.UnmarshalWithConf("", &out, koanf.UnmarshalConf{Tag: structTag, DecoderConfig: decoderConfig(&out)}); err != nil {
 		return out, fmt.Errorf("shikumi: decode: %w", err)
 	}
 	return out, nil
 }
 
 // Store is a lock-free, hot-reloadable typed config store — the Go analog of
-// the Rust crate's ArcSwap store. Reads via Get never block; Reload swaps in a
-// new value atomically.
+// the Rust crate's ArcSwap store. Reads via Get never block; Reload uses the
+// community-canonical safe shape: parse → validate → stage → swap, with
+// keep-last-good rollback on any failure (a malformed or invalid config is
+// rejected and the previously published pointer is preserved).
 type Store[T any] struct {
 	path     string
 	prefix   string
 	defaults T
+
+	// loader, when set, makes Reload re-run the full fluent pipeline
+	// (validate-before-swap, keep-last-good). When nil, the store falls back to
+	// the legacy single-pass Load (back-compat for LoadStore[T]).
+	loader *Loader[T]
 
 	val     atomic.Pointer[T]
 	mu      sync.Mutex // serialises reloads
 	watcher *fileWatcher
 }
 
-// LoadStore loads config (via Load) and returns a hot-reloadable store.
+// LoadStore loads config (via Load) and returns a hot-reloadable store. This is
+// the back-compat constructor; new code uses
+// shikumi.For[T](app)…LoadStore(ctx) which threads validation through reloads.
 func LoadStore[T any](path, prefix string, defaults T) (*Store[T], error) {
 	s := &Store[T]{path: path, prefix: prefix, defaults: defaults}
 	if err := s.Reload(); err != nil {
@@ -132,14 +137,35 @@ func (s *Store[T]) Get() *T { return s.val.Load() }
 // Path returns the config file path backing this store.
 func (s *Store[T]) Path() string { return s.path }
 
-// Reload re-runs the provider chain and atomically swaps in the new config.
-func (s *Store[T]) Reload() error {
+// Reload re-runs the provider chain and atomically swaps in the new config,
+// keeping the last-good value if the new one fails to parse or validate.
+func (s *Store[T]) Reload() error { return s.reloadCtx(context.Background()) }
+
+// reloadCtx is the validate-before-swap implementation. It computes the next
+// config completely (parse + decode + defaults + validate) and only then swaps
+// the atomic pointer. On any error the current pointer is untouched
+// (keep-last-good).
+func (s *Store[T]) reloadCtx(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cfg, err := Load(s.path, s.prefix, s.defaults)
-	if err != nil {
-		return err
+
+	var (
+		next T
+		err  error
+	)
+	if s.loader != nil {
+		// Full pipeline path: validation happens inside Load.
+		next, err = s.loader.runPipeline(ctx, s.path)
+		if err == nil {
+			err = s.loader.validate(next)
+		}
+	} else {
+		// Legacy single-pass path (no validator).
+		next, err = Load(s.path, s.prefix, s.defaults)
 	}
-	s.val.Store(&cfg)
+	if err != nil {
+		return err // keep-last-good: pointer untouched
+	}
+	s.val.Store(&next) // swap only after a clean parse+validate
 	return nil
 }
