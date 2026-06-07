@@ -4,8 +4,8 @@ go 1.25.8
 
 require (
 	github.com/go-playground/validator/v10 v10.30.3
-	github.com/pleme-io/borealis v0.0.0
-	github.com/pleme-io/shikumi-go v0.0.0
+	github.com/pleme-io/borealis v0.1.1
+	github.com/pleme-io/shikumi-go v0.2.1
 )
 
 require (
@@ -39,6 +39,7 @@ require (
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sethvargo/go-envconfig v1.3.0 // indirect
+	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
@@ -49,9 +50,4 @@ require (
 
 // The borealis-rendered diagnostics sink is a leaf sub-module (Law 8) so the
 // zero-pleme-dep shikumi-go config core stays acyclic: shikumi-go core no longer
-// imports borealis, breaking the shikumi-go<->borealis module cycle. These deps
-// are consumed from the local working tree until published; the replace
-// directives are dropped once the upstream tags exist on the module proxy.
-replace github.com/pleme-io/shikumi-go => ../
-
-replace github.com/pleme-io/borealis => ../../borealis
+// imports borealis, breaking the shikumi-go<->borealis module cycle.
