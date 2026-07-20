@@ -38,22 +38,35 @@ func (f ValidatorFunc) Validate(v any) error { return f(v) }
 //	    Validate(v).
 //	    Load(ctx)
 type Loader[Root any] struct {
-	app         string
-	envPrefix   string
-	envOverride string
-	formats     []Format
-	dirs        []string
+	app          string
+	envPrefix    string
+	envOverride  string
+	formats      []Format
+	dirs         []string
 	explicitPath string
 
-	defaults  Root
+	defaults    Root
 	hasDefaults bool
+
+	// bare is the zero-opinion FLOOR distinguished from the opinionated
+	// prescribed_default (which maps to Defaults). Used ONLY by the progressive
+	// fold (ResolveProgressive[With]); when unset, bare == the zero Root (mirror
+	// the Rust bare() enumerate-every-field floor, I5). Additive to the classic
+	// Load path, which never reads it.
+	bare    Root
+	hasBare bool
+
+	// discoveryLayers register the discovered() tier for the progressive fold —
+	// one per kanchi axis-group. Absent → the Discovered tier == bare (mirror
+	// the Rust default discovered()=bare()). Not consulted by Load/runPipeline.
+	discoveryLayers []DiscoveryLayer
 
 	preLayers  []Layer // layers before env (e.g. flags)
 	resolvers  map[string]SecretResolver
 	defBackend string
 	bootstrap  []Layer // BootstrapLayer phase-1 layers
 
-	validators []Validator
+	validators       []Validator
 	applyTagDefaults bool
 }
 
@@ -66,10 +79,10 @@ type Option[Root any] func(*Loader[Root])
 // declaratively, or chain the fluent methods.
 func For[Root any](app string, opts ...Option[Root]) *Loader[Root] {
 	l := &Loader[Root]{
-		app:        app,
-		formats:    DefaultFormats,
-		resolvers:  map[string]SecretResolver{},
-		defBackend: string(BackendEnv),
+		app:              app,
+		formats:          DefaultFormats,
+		resolvers:        map[string]SecretResolver{},
+		defBackend:       string(BackendEnv),
 		applyTagDefaults: true,
 	}
 	for _, o := range opts {
@@ -107,6 +120,27 @@ func (l *Loader[Root]) Path(p string) *Loader[Root] { l.explicitPath = p; return
 func (l *Loader[Root]) Defaults(d Root) *Loader[Root] {
 	l.defaults = d
 	l.hasDefaults = true
+	return l
+}
+
+// Bare seeds the zero-opinion FLOOR tier used by the progressive fold
+// (ResolveProgressive[With]). It is DISTINCT from Defaults: Bare is the
+// enumerate-every-field floor that seeds completeness (I5), while Defaults maps
+// to the opinionated prescribed_default tier. When Bare is unset, the fold uses
+// the zero Root as the floor (mirror the Rust bare() default). Additive: the
+// classic Load path never reads it.
+func (l *Loader[Root]) Bare(b Root) *Loader[Root] {
+	l.bare = b
+	l.hasBare = true
+	return l
+}
+
+// Discovered registers the discovered-tier layers on the existing fluent
+// Loader — one per kanchi axis-group. Absent → the Discovered tier == bare
+// (mirror the Rust default discovered()=bare(), tiered.rs:350-352). Extends the
+// builder; does not touch Load/runPipeline/Store.
+func (l *Loader[Root]) Discovered(layers ...DiscoveryLayer) *Loader[Root] {
+	l.discoveryLayers = append(l.discoveryLayers, layers...)
 	return l
 }
 
@@ -157,8 +191,10 @@ func (l *Loader[Root]) TagDefaults(on bool) *Loader[Root] { l.applyTagDefaults =
 
 // --- functional Options (mirror the fluent methods) ------------------------
 
-func WithEnvPrefix[Root any](p string) Option[Root]   { return func(l *Loader[Root]) { l.envPrefix = p } }
-func WithEnvOverride[Root any](n string) Option[Root] { return func(l *Loader[Root]) { l.envOverride = n } }
+func WithEnvPrefix[Root any](p string) Option[Root] { return func(l *Loader[Root]) { l.envPrefix = p } }
+func WithEnvOverride[Root any](n string) Option[Root] {
+	return func(l *Loader[Root]) { l.envOverride = n }
+}
 func WithDefaults[Root any](d Root) Option[Root] {
 	return func(l *Loader[Root]) { l.defaults = d; l.hasDefaults = true }
 }
