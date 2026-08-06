@@ -19,6 +19,6 @@
       name = "shikumi-go";
       version = "0.1.0";
       src = self;
-      vendorHash = null;
+      vendorHash = "sha256-yOorElfDmQBILSt/1jsj6MVAuURda7frbf3CSMz726o=";
     };
 }
