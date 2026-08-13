@@ -37,6 +37,9 @@ var DefaultFormats = []Format{Yaml, Yml, Toml}
 //  4. any extra dirs (e.g. /etc/{app} or a repo-local dir),
 //  5. legacy dotfiles: $HOME/.{app}, $HOME/.{app}.{ext}.
 //
+// Every environment-derived arm (1, 2, 3, 5) must be ABSOLUTE; a relative value
+// is dropped rather than joined. See candidates for why.
+//
 // Within a directory, formats are tried in preference order.
 type Discovery struct {
 	app         string
@@ -69,11 +72,23 @@ func (d *Discovery) Dirs(dirs ...string) *Discovery {
 }
 
 // candidates returns ordered candidate paths, highest precedence first.
+//
+// Every environment-derived arm is filtered by filepath.IsAbs, not merely by
+// non-emptiness. A non-empty check alone lets XDG_CONFIG_HOME="rel/x" (or a
+// relative $HOME, or a relative override) join into a path resolved against the
+// process's CURRENT WORKING DIRECTORY, so running a tool inside a directory
+// someone else can write silently changes which config it loads. IsAbs("")
+// is false, so it subsumes the non-empty check it replaces: an absolute value
+// resolves exactly where it always did, and only values that were never valid
+// are dropped.
+//
+// Caller-supplied Dirs are deliberately NOT filtered — a repo-local relative
+// dir is a documented, intentional use of that seam, not an environment leak.
 func (d *Discovery) candidates() []string {
 	var paths []string
 
 	if d.envOverride != "" {
-		if p := os.Getenv(d.envOverride); p != "" {
+		if p := os.Getenv(d.envOverride); filepath.IsAbs(p) {
 			paths = append(paths, p)
 		}
 	}
@@ -84,10 +99,16 @@ func (d *Discovery) candidates() []string {
 		}
 	}
 
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); filepath.IsAbs(xdg) {
 		formatted(filepath.Join(xdg, d.app))
 	}
+	// os.UserHomeDir returns $HOME verbatim when set — it does NOT filter for
+	// absoluteness — so a relative $HOME reaches both home-derived arms below.
+	// Normalize once here so arms 3 and 5 cannot disagree.
 	home, _ := os.UserHomeDir()
+	if !filepath.IsAbs(home) {
+		home = ""
+	}
 	if home != "" {
 		formatted(filepath.Join(home, ".config", d.app))
 	}
