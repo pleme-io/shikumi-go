@@ -11,5 +11,5 @@ on:
         default: patch
 jobs:
   release:
-    uses: pleme-io/substrate/.github/workflows/go-auto-release.yml@main
+    uses: pleme-io/flows/.github/workflows/go-auto-release.yml@main
     secrets: inherit
